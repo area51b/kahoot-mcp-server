@@ -1,0 +1,8 @@
+python-dotenv 
+mss 
+pillow 
+pytesseract 
+pyautogui 
+requests 
+keyboard
+mcp[cli]
