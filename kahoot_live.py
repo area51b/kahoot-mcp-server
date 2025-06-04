@@ -1,6 +1,5 @@
 from dotenv import load_dotenv
 import os
-import sys
 import mss
 import json
 import requests
@@ -49,7 +48,7 @@ def nims_cloud_answer(text):
         "stream": False
     }
     try:
-        res = requests.post(url, headers=headers, json=payload)
+        res = requests.post(url, headers=headers, json=payload, verify=False)
         res.raise_for_status()
         reply = res.json()["choices"][0]["message"]["content"]
         return int(reply.strip())
@@ -82,15 +81,8 @@ def ollama_answer(question_and_answers):
 
         # Return the button number as an integer
         return int(reply)
-    except ValueError:
-        # Handle exception here if the reply is not an integer
-        print(f"Unexpected reply: {reply}")
-        return int(reply[1])
     except Exception as e:
-        # Handle exception here if something else goes wrong
-        print("Something went wrong.")
-        print(e)
-        print(response)
+        print("Failed to get answer:", e)
         return None
 
 def preprocess_and_ocr(key, region):
