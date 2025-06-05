@@ -6,8 +6,9 @@ import requests
 import keyboard
 import pyautogui
 import pytesseract
+import numpy as np
 from datetime import datetime
-from PIL import Image, ImageEnhance, ImageFilter
+from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 from concurrent.futures import ThreadPoolExecutor
 
 load_dotenv()
@@ -60,8 +61,8 @@ def ollama_answer(question_and_answers):
     url = get_env("OLLAMA_API_URL")
     headers = {"Content-Type": "application/json"}
     data = {
-        "model": "llama3.3:70b-instruct-q4_0",
-        #"model": "llama3.3:70b-instruct-fp16",
+        #"model": "llama3.3:70b-instruct-q4_0",
+        "model": "llama3.3:70b-instruct-fp16",
         #"model": "llama3.1:8b",
         "messages": [
             {
@@ -85,16 +86,42 @@ def ollama_answer(question_and_answers):
         print("Failed to get answer:", e)
         return None
 
+def enhance_yellow_region(image):
+    # Convert to RGB and numpy array
+    img = np.array(image.convert('RGB'))
+    
+    # Step 1: Convert to grayscale with higher weight on green (better for yellow detection)
+    gray = np.dot(img[..., :3], [0.25, 0.65, 0.1]).astype(np.uint8)
+
+    # Step 2: Boost contrast before inverting
+    pil_img = Image.fromarray(gray)
+    pil_img = ImageEnhance.Contrast(pil_img).enhance(2.5)
+
+    # Step 3: Invert to make white text dark
+    inverted = ImageOps.invert(pil_img)
+
+    # Step 4: Sharpen and scale
+    sharpened = inverted.filter(ImageFilter.SHARPEN)
+    final = sharpened.resize((sharpened.width * 2, sharpened.height * 2))
+
+    return final
+
 def preprocess_and_ocr(key, region):
-    region = region.convert('L')
-    if key == 0:
-        region = region.point(lambda p: 255 if p > 180 else 0)
-        config = '--oem 3 --psm 6'
-    else:
-        region = ImageEnhance.Contrast(region).enhance(3.0)
-        region = region.filter(ImageFilter.SHARPEN)
+    if key == 3:
+        region = enhance_yellow_region(region)
         config = '--oem 3 --psm 7'
+    else:
+        region = region.convert('L')
+        if key == 0:
+            region = region.point(lambda p: 255 if p > 180 else 0)
+            config = '--oem 3 --psm 6'
+        else:
+            region = ImageEnhance.Contrast(region).enhance(2.0)
+            region = region.filter(ImageFilter.SHARPEN)
+            config = '--oem 3 --psm 7'
+
     region = region.resize((region.width * 2, region.height * 2))
+    # region.save(f"debug_{key}.png") 
     text = pytesseract.image_to_string(region, config=config)
     return key, text.strip()
 
