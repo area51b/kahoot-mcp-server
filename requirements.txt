@@ -5,4 +5,5 @@ pytesseract
 pyautogui 
 requests 
 keyboard
+opencv-python
 mcp[cli]
