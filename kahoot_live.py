@@ -1,5 +1,6 @@
 from dotenv import load_dotenv
 import os
+import cv2
 import mss
 import json
 import requests
@@ -8,7 +9,7 @@ import pyautogui
 import pytesseract
 import numpy as np
 from datetime import datetime
-from PIL import Image, ImageEnhance, ImageFilter, ImageOps
+from PIL import Image
 from concurrent.futures import ThreadPoolExecutor
 
 load_dotenv()
@@ -19,7 +20,6 @@ def get_env(var):
         raise EnvironmentError(f"Environment variable '{var}' is not set.")
     return value
 
-# Set Tesseract executable path
 pytesseract.pytesseract.tesseract_cmd = get_env("TESSERACT_PATH")
 
 def click_button(button):
@@ -56,7 +56,7 @@ def nims_cloud_answer(text):
     except Exception as e:
         print("Failed to get answer:", e)
         return None
-    
+
 def ollama_answer(question_and_answers):
     url = get_env("OLLAMA_API_URL")
     headers = {"Content-Type": "application/json"}
@@ -75,54 +75,60 @@ def ollama_answer(question_and_answers):
 
     try:
         response = requests.post(url, headers=headers, json=data)
-
-        # Extract the assistant's reply
-        data = json.loads(response.text)
-        reply = data["choices"][0]["message"]["content"]
-
-        # Return the button number as an integer
+        reply = json.loads(response.text)["choices"][0]["message"]["content"]
         return int(reply)
     except Exception as e:
         print("Failed to get answer:", e)
         return None
 
-def enhance_yellow_region(image):
-    # Convert to RGB and numpy array
-    img = np.array(image.convert('RGB'))
-    
-    # Step 1: Convert to grayscale with higher weight on green (better for yellow detection)
-    gray = np.dot(img[..., :3], [0.25, 0.65, 0.1]).astype(np.uint8)
+# OCR config presets
+OCR_CONFIGS = {
+    "question": '--oem 3 --psm 6',
+    "option": '--oem 3 --psm 7'
+}
 
-    # Step 2: Boost contrast before inverting
-    pil_img = Image.fromarray(gray)
-    pil_img = ImageEnhance.Contrast(pil_img).enhance(2.5)
+def enhance_yellow_region_cv2(image):
+    img = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
 
-    # Step 3: Invert to make white text dark
-    inverted = ImageOps.invert(pil_img)
+    # Detect yellow background
+    lower_yellow = np.array([15, 50, 150])
+    upper_yellow = np.array([45, 255, 255])
+    mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
+    mask_inv = cv2.bitwise_not(mask)
 
-    # Step 4: Sharpen and scale
-    sharpened = inverted.filter(ImageFilter.SHARPEN)
-    final = sharpened.resize((sharpened.width * 2, sharpened.height * 2))
+    bg = cv2.bitwise_and(img, img, mask=mask)
+    text = cv2.bitwise_and(img, img, mask=mask_inv)
 
-    return final
+    bg[np.where(mask > 0)] = [255, 255, 255]
+    text[np.where(mask_inv > 0)] = [0, 0, 0]
 
-def preprocess_and_ocr(key, region):
+    combined = cv2.add(bg, text)
+    gray = cv2.cvtColor(combined, cv2.COLOR_BGR2GRAY)
+    gray = cv2.resize(gray, (0, 0), fx=1.5, fy=1.5, interpolation=cv2.INTER_LINEAR)
+    return gray
+
+def preprocess_and_ocr(key, region_pil):
+    img = np.array(region_pil.convert('RGB'))
+
     if key == 3:
-        region = enhance_yellow_region(region)
-        config = '--oem 3 --psm 7'
+        processed = enhance_yellow_region_cv2(region_pil)
+        config = OCR_CONFIGS["option"]
     else:
-        region = region.convert('L')
+        gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
         if key == 0:
-            region = region.point(lambda p: 255 if p > 180 else 0)
-            config = '--oem 3 --psm 6'
+            _, processed = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
+            config = OCR_CONFIGS["question"]
         else:
-            region = ImageEnhance.Contrast(region).enhance(2.0)
-            region = region.filter(ImageFilter.SHARPEN)
-            config = '--oem 3 --psm 7'
+            # Enhance contrast
+            processed = cv2.convertScaleAbs(gray, alpha=2.0, beta=0)
+            # Skip unnecessary blur for sharper text
+            config = OCR_CONFIGS["option"]
 
-    region = region.resize((region.width * 2, region.height * 2))
-    # region.save(f"debug_{key}.png") 
-    text = pytesseract.image_to_string(region, config=config)
+        # Resize only once here for all non-yellow
+        processed = cv2.resize(processed, (0, 0), fx=2.0, fy=2.0, interpolation=cv2.INTER_LINEAR)
+
+    text = pytesseract.image_to_string(Image.fromarray(processed), config=config)
     return key, text.strip()
 
 def extract_text():
@@ -152,7 +158,7 @@ def extract_text():
     }
 
     result_text = ""
-    with ThreadPoolExecutor() as pool:
+    with ThreadPoolExecutor(max_workers=5) as pool:
         results = pool.map(lambda kv: preprocess_and_ocr(*kv), regions.items())
         for key, text in results:
             if text:
@@ -162,21 +168,18 @@ def extract_text():
     print(result_text)
 
     try:
+        #print(f"[{datetime.now()}] OCR completed")
         #answer = nims_cloud_answer(result_text)
         answer = ollama_answer(result_text)
+        #print(f"[{datetime.now()}] LLM completed")
+        click_button(answer if answer in [1, 2, 3, 4] else 1)
         print(f"Predicted answer: {answer}")
-        if answer in [1, 2, 3, 4]:
-            click_button(answer)
-        else:
-            click_button(1)
         print(f"[{datetime.now()}] click_button completed")
     except Exception as e:
         print("Error in answering/clicking:", e)
 
-# Bind the function to a hotkey
 keyboard.add_hotkey("ctrl+alt+t", extract_text)
 
-# Keep the program running
 try:
     keyboard.wait()
 except KeyboardInterrupt:
